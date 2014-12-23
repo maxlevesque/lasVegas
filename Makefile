@@ -35,7 +35,8 @@ OPTIM = -O3 -march=native -ffast-math -funroll-loops
 
 # ——————————————— Files to compile ———————————————
 
-FOBJ = $(OBJDIR)/main.o
+FOBJ = $(OBJDIR)/main.o\
+			$(OBJDIR)/print_header.o
 
 # ——————————————— Global rules ———————————————
 
@@ -68,3 +69,6 @@ $(EXE): $(FOBJ)
 
 $(OBJDIR)/main.o:\
 	$(SRCDIR)/main.f90
+
+$(OBJDIR)/print_header.o:\
+	$(SRCDIR)/print_header.f90

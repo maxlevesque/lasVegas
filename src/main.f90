@@ -36,6 +36,8 @@ program lasvegas
   double precision, parameter :: beta=1./(boltzmanncst*temperature)
   double precision, parameter :: halflen=len/2.
 
+  call print_header
+
   drmax = sig/2.
   ntrial = 0
   naccpt = 0
