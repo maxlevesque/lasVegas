@@ -20,8 +20,8 @@ end module histogram
 program lasvegas
   use histogram, only: h, bin, histogram_init=>init
   implicit none
-  integer, parameter :: N=128
-  double precision, parameter :: len=15.6664 ! Angstrom , box length
+  integer, parameter :: N=512
+  double precision, parameter :: len=24.8689 ! Angstrom , box length
   integer, parameter :: mcstepmax=10**5
   integer :: i, j, mcstep, k, l
   double precision :: rx(N), ry(N), rz(N) ! positions of the N particles
@@ -37,7 +37,7 @@ program lasvegas
   double precision, parameter :: halflen=len/2.
 
   call print_header
-
+  call random_seed()
   drmax = sig/2.
   ntrial = 0
   naccpt = 0
