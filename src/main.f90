@@ -2,7 +2,7 @@ module histogram
   implicit none
   private
   double precision, public :: h ! distance between 2 bins
-  integer, public :: bin(200) ! 100 bins of length h
+  integer, public :: bin(180) ! 100 bins of length h
   public :: init
 contains
   subroutine init(len)
@@ -20,8 +20,8 @@ end module histogram
 program lasvegas
   use histogram, only: h, bin, histogram_init=>init
   implicit none
-  integer, parameter :: N=512
-  double precision, parameter :: len=24.8689 ! Angstrom , box length
+  integer, parameter :: N=128
+  double precision, parameter :: len=15.6664 ! Angstrom , box length
   integer, parameter :: mcstepmax=10**5
   integer :: i, j, mcstep, k, l
   double precision :: rx(N), ry(N), rz(N) ! positions of the N particles
@@ -35,6 +35,7 @@ program lasvegas
   double precision, parameter :: temperature = 300 ! K
   double precision, parameter :: beta=1./(boltzmanncst*temperature)
   double precision, parameter :: halflen=len/2.
+  double precision, parameter :: pi=acos(-1.d0)
 
   call print_header
   call random_seed()
@@ -160,7 +161,7 @@ program lasvegas
     end if
 
     ! histogram
-    if(ntrial > mcstepmax/10) then
+    if(ntrial > mcstepmax/10) then ! trick to not accumulate stats before "melting". Much smarter tricks could be used.
       do i=1,N
         do j=1,N
           if (j/=i) then
@@ -184,15 +185,51 @@ program lasvegas
   close(43) ! internal energy
 
   ! print radial distribution function
-  open(77,file="rdf.dat")
-  do i=1,size(bin)
-    r = (i-0.5)*h
-    if( r <= len/2.) then
-      intensity = real(bin(i))/real(ntrial)
-      r2 = r**2
-      write(77,*) r, intensity/(4*acos(-1.)*r2)
-    end if
-  end do
-  close(77)
+  block
+    double precision :: const, rupper, rlower, rho, nideal, gr(size(bin)), grsm(size(bin))
+    integer :: imax
+    rho = real(N)/len**3
+    const = 4.*pi*rho/3.
+    open(77,file="rdf.dat")
+    imax=0
+    do i=1,size(bin)
+      r = (i-0.5)*h
+      if( r > len/2.) cycle
+      if(imax<i) imax=i
+      rlower = real(i-1)*h
+      rupper = rlower+h
+      nideal = const *(rupper**3-rlower**3)
+      gr(i) = real(bin(i)) / real(ntrial) / real(N) / nideal
+      write(77,*) r, gr(i)
+    end do
+    close(77)
+    ! write a smoothed g(r) see Tildesley p.204
+    ! third degree, five point smoothing
+    do i=1,imax
+      if(i==1) then
+        grsm(i)=(69*gr(i)+4* gr(i+1)-6*gr(i+2)+4*gr(i+3)-gr(i+4))/70.
+      else if(i==2) then
+        grsm(i)=(2* gr(i-1)+27*gr(i)+12*gr(i+1)-8*gr(i+2)+2*gr(i+3))/35.
+      else if(i>2 .and. i<imax-1) then
+        grsm(i)=(-3*gr(i-2)+12*gr(i-1)+17*gr(i)+12*gr(i+1)-3*gr(i+2))/35.
+      else if(i==imax-1) then
+        grsm(i)=(2* gr(i+1)+27*gr(i)+12*gr(i-1)-8*gr(i-2)+2*gr(i-3))/35.
+      else if(i==imax) then
+        grsm(i)=(69*gr(i)+4*gr(i-1)-6*gr(i-2)+4*gr(i-3)-gr(i-4))/70.
+      end if
+    end do
+    open(78,file="smoothed-rdf.dat")
+    do i=1,imax
+      r=(i-0.5)*h
+      write(78,*)r,grsm(i)
+    end do
+    close(78)
+  end block
+
+  ! print positions
+  open(39,file="pos.dat",form="unformatted")
+  write(39)rx,ry,rz
+  close(39)
+
 
 end program lasvegas
