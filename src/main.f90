@@ -20,14 +20,19 @@ end module histogram
 program lasvegas
   use histogram, only: h, bin, histogram_init=>init
   implicit none
-  integer, parameter :: N=128
-  double precision, parameter :: len=15.6664 ! Angstrom , box length
-  integer, parameter :: mcstepmax=10**5
+  integer, parameter :: N=128 ! number of molecules
+  double precision, parameter :: rO(3)=[0.,0.,0.]
+  double precision, parameter :: rH1(3)=[ 0.816495,0.,0.5773525]
+  double precision, parameter :: rH2(3)=[-0.816495,0.,0.5773525]
+  double precision, parameter :: len=15.6664 ! Supercell length in angstroms
+  double precision, parameter :: targetacceptanceratio = 0.4
+  integer, parameter :: mcstepmax=10**5 ! number of MonteCarlo steps
   integer :: i, j, mcstep, k, l
-  double precision :: rx(N), ry(N), rz(N) ! positions of the N particles
+  double precision :: rx(N), ry(N), rz(N) ! cartesian coordinates of the center of mass of all N particles
+  double precision :: rxH1(N), ryH1(N), rzH1(N), rxH2(N), ryH2(N), rzH2(N)
   double precision, parameter :: eps=0.65, sig=3.166 ! lennard jones
   double precision, parameter :: sig6=sig**6, sig12=sig**12
-  double precision :: r2, r6, r12, U, dx, dy, dz, Uij, drmax, rand, du, dub, ratio, dl, r, intensity
+  double precision :: r2, r6, r12, U, dx, dy, dz, Uij, dr, drmax, rand, du, dub, ratio, dl, r, intensity
   double precision :: rxinew, ryinew, rzinew, rsqrt
   integer :: ntrial, naccpt, ibin
   integer, parameter :: nadjst=10**3
@@ -36,6 +41,8 @@ program lasvegas
   double precision, parameter :: beta=1./(boltzmanncst*temperature)
   double precision, parameter :: halflen=len/2.
   double precision, parameter :: pi=acos(-1.d0)
+  double precision :: q0, q1, q2, q3 ! quaternion used to easily define the rotation matrix
+  double precision :: a11,a12,a13,a21,a22,a23,a31,a32,a33
 
   call print_header
   call random_seed()
@@ -44,7 +51,7 @@ program lasvegas
   naccpt = 0
   call histogram_init(len)
 
-  ! init positions the farther possible
+  ! init positions the farther possible in cubic lattice
   l=0
   dl = len/real(nint(N**(1./3.))+1)
   do i=1,nint(N**(1./3.))+1
@@ -55,12 +62,24 @@ program lasvegas
         rx(l)=(i-1)*dl
         ry(l)=(j-1)*dl
         rz(l)=(k-1)*dl
-        IF(ANY([rx(l),ry(l),rz(l)]<0).or.ANY([rx(l),ry(l),rz(l)]>=len)) stop"rxinew etc must be >=0 and <len"
+        if( any([rx(l),ry(l),rz(l)] <0) .or. any([rx(l),ry(l),rz(l)] >=len)) stop "rxinew etc must be >=0 and <len"
       end do
     end do
   end do
 
-  ! total potential energy of the system
+  ! init position of hydrogen atoms
+  do i=1,N
+    rxH1(i)=rx(i)+rH1(1)
+    ryH1(i)=ry(i)+rH1(2)
+    rzH1(i)=rz(i)+rH1(3)
+    rxH2(i)=rx(i)+rH2(1)
+    ryH2(i)=ry(i)+rH2(2)
+    rzH2(i)=rz(i)+rH2(3)
+  end do
+
+  ! Total potential energy of the system
+  ! ====================================
+  ! 1/ Lennard-Jones
   u = 0
   do i=1,N-1
     do j=i+1,N
@@ -77,10 +96,14 @@ program lasvegas
       U = U + Uij
     end do
   end do
+  ! 2/ Electrostatics
+
 
   open(43,file="internal-energy.dat")
   write(43,*) u
 
+  ! Monte Carlo Metropolis steps
+  ! ============================
   do mcstep=1,mcstepmax
 
     ! randomnly select a particle i between 1 and N
@@ -88,18 +111,56 @@ program lasvegas
     i = 1 + FLOOR(N*rand)    ! i integer in {1,...,N}
 
     ! displace x coordinate of particle i by a random umount, dx, which is given by dx = dR*u, where u is a uniform random variate in [-0.5:0.5]
+    ! x
     call random_number(rand)
-    rxinew = modulo( rx(i) + drmax*(2*rand-1) ,len)
+    dr = drmax*(2*rand-1)
+    rxinew   = modulo(rx(i)  +dr,len)
+    rxinewh1 = modulo(rxh1(i)+dr,len)
+    rxinewh2 = modulo(rxh2(i)+dr,len)
+    ! y
     call random_number(rand)
-    ryinew = modulo( ry(i) + drmax*(2*rand-1) ,len)
+    dr = drmax*(2*rand-1)
+    ryinew   = modulo(ry(i)  +dr,len)
+    ryinewh1 = modulo(ryh1(i)+dr,len)
+    ryinewh2 = modulo(ryh2(i)+dr,len)
+    ! z
     call random_number(rand)
-    rzinew = modulo( rz(i) + drmax*(2*rand-1) ,len)
+    dr = drmax*(2*rand-1)
+    rzinew   = rz(i)  +dr
+    rzinewh1 = rzh1(i)+dr
+    rzinewh2 = rzh2(i)+dr
 
-    IF(ANY([rxinew,ryinew,rzinew]<0).or.ANY([rxinew,ryinew,rzinew]>=len)) stop"rxinew etc must be >=0 and <len"
+    ! rotate molecule by a random quantity
+    ! ====================================
+    call generate_random_quaternions (q0,q1,q2,q3)
+    ! rotation matrix
+    a11=q0**2+q1**2-q2**2-q3**2; a12=2*(q1*q2+q0*q3)        ; a13=2*(-q0*q2+q1*q3)
+    a21=2*(q1*q2-q0*q3)        ; a22=q0**2-q1**2+q2**2-q3**2; a23=2*(q0*q1+q2*q3)
+    a31=2*(q0*q2+q1*q3)        ; a32=2*(-q0*q1+q2*q3)       ; a33=q0**2-q1**2-q2**2+q3**2
+    ! apply rotation matrix
+    rxinewrot   = a11*rxinew + a12*ryinew + a13*rzinew
+    ryinewrot   = a21*rxinew + a22*ryinew + a23*rzinew
+    rzinewrot   = a31*rxinew + a32*ryinew + a33*rzinew
+    rxinew = modulo(rxinewrot,len)
+    ryinew = modulo(ryinewrot,len)
+    rzinew = modulo(rzinewrot,len)
+    rxinewh1rot = a11*rxinewh1 + a12*ryinewh1 + a13*rzinewh1
+    ryinewh1rot = a21*rxinewh1 + a22*ryinewh1 + a23*rzinewh1
+    rzinewh1rot = a31*rxinewh1 + a32*ryinewh1 + a33*rzinewh1
+    rxinewh1 = modulo(rxinewh1rot,len)
+    ryinewh1 = modulo(ryinewh1rot,len)
+    rzinewh1 = modulo(rzinewh1rot,len)
+    rxinewh2rot = a11*rxinewh2 + a12*ryinewh2 + a13*rzinewh2
+    ryinewh2rot = a21*rxinewh2 + a22*ryinewh2 + a23*rzinewh2
+    rzinewh2rot = a31*rxinewh2 + a32*ryinewh2 + a33*rzinewh2
+    rxinewh2 = modulo(rxinewh2rot,len)
+    ryinewh2 = modulo(ryinewh2rot,len)
+    rzinewh2 = modulo(rzinewh2rot,len)
 
     ! compute variation in energy
     du = 0
     do j=1,N
+      ! add new contribution to LJ
       if( j==i ) cycle
       dx = abs(rxinew-rx(j))
       if( dx>halflen ) dx=len-dx
@@ -112,7 +173,7 @@ program lasvegas
       r12 = r6**2
       Uij = 4*eps*( sig12/r12 - sig6/r6 )
       du = du + Uij
-
+      ! remove old contribution
       dx = abs(rx(i)-rx(j))
       if( dx>halflen ) dx=len-dx
       dy = abs(ry(i)-ry(j))
@@ -123,7 +184,7 @@ program lasvegas
       r6 = r2**3
       r12 = r6**2
       Uij = 4*eps*( sig12/r12 - sig6/r6 )
-      du = du +(-Uij)
+      du = du -Uij
     end do
 
     dub = du * beta
@@ -150,17 +211,18 @@ program lasvegas
     ntrial = ntrial + 1
     if( modulo(ntrial,nadjst)==0 ) then
       ratio = real(naccpt)/real(nadjst)
-      if( ratio > 0.3 ) then
+      if( ratio > targetacceptanceratio ) then
         drmax = drmax * 1.05
       else
         drmax = drmax * 0.95
       end if
       naccpt = 0
       print*,"progress(%)",floor(real(ntrial)/real(mcstepmax)*100)
-      if(abs((ratio-0.3)/0.3)>0.2) print*,"WARNING: accpt ratio=",real(ratio,4),"only. Target=>0.3"
+      if(abs((ratio-targetacceptanceratio)/targetacceptanceratio)>0.2) print*,"WARNING: accpt ratio=",&
+        real(ratio,4),"only. Target=>0.3"
     end if
 
-    ! histogram
+    ! histogram for the center of mass
     if(ntrial > mcstepmax/10) then ! trick to not accumulate stats before "melting". Much smarter tricks could be used.
       do i=1,N
         do j=1,N
@@ -184,7 +246,9 @@ program lasvegas
 
   close(43) ! internal energy
 
+
   ! print radial distribution function
+  ! ==================================
   block
     double precision :: const, rupper, rlower, rho, nideal, gr(size(bin)), grsm(size(bin))
     integer :: imax
@@ -231,5 +295,34 @@ program lasvegas
   write(39)rx,ry,rz
   close(39)
 
+
+
+
+contains
+
+  ! Generate random quaternion
+  ! Method by G. Marsaglia, Choosing a point from the surface of a sphere, Ann. Math. Stat. 43, 645–646 (1972).
+  subroutine generate_random_quaternions (q0, q1, q2, q3)
+    implicit none
+    double precision, intent(out) :: q0, q1, q2, q3
+    double precision :: x1, x2, y1, y2, s1, s2, t
+    s1=10
+    do while(s1>1)
+      call random_number(x1)
+      call random_number(y1)
+      s1=x1**2+y1**2
+    end do
+    s2=10
+    do while(s2>1)
+      call random_number(x2)
+      call random_number(y2)
+      s2=x2**2+y2**2
+    end do
+    q0=x1
+    q1=y1
+    t=sqrt((1-s1)/s2)
+    q2=x2*t
+    q3=y2*t
+  end subroutine generate_random_quaternions
 
 end program lasvegas
