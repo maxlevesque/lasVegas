@@ -19,31 +19,37 @@ end module histogram
 
 program lasvegas
   use histogram, only: h, bin, histogram_init=>init
+  use ewald, only: ewald_init, ewald_energy
   implicit none
   integer, parameter :: N=128 ! number of molecules
   integer, parameter :: mcstepmax=10**5 ! number of MonteCarlo steps
   double precision, parameter :: len=15.6664 ! Supercell length in angstroms
-  double precision, parameter :: rO_molecularframe(3)=[0.,0.,0.]
-  double precision, parameter :: rH1_molecularframe(3)=[ 0.816495,0.,0.5773525]
-  double precision, parameter :: rH2_molecularframe(3)=[-0.816495,0.,0.5773525]
   double precision, parameter :: targetacceptanceratio = 0.4
   integer :: i, j, mcstep, k, l
   double precision :: rxO(N), ryO(N), rzO(N), rxH1(N), ryH1(N), rzH1(N), rxH2(N), ryH2(N), rzH2(N) ! cartesian coordinates of all N molecules
-  double precision, parameter :: eps=0.65, sig=3.166 ! lennard jones
+  ! WATER MODEL: SPC/E by Berendsen et al. JCP 1987
+  double precision, parameter :: rO_molecularframe(3)=[0.,0.,0.]
+  double precision, parameter :: rH1_molecularframe(3)=[ 0.816495,0.,0.5773525]
+  double precision, parameter :: rH2_molecularframe(3)=[-0.816495,0.,0.5773525]
+  double precision, parameter :: qH=0.42380, qO=-2.*qH
+  double precision, parameter :: eps=0.65 ! kJ/mol
+  double precision, parameter :: sig=3.166 ! Angstroms
+
   double precision, parameter :: sig6=sig**6, sig12=sig**12
-  double precision :: r6, r12, U, dx, dy, dz, Uij, dr, drmax, rand, rand3(3), du, dub, ratio, r
+  double precision :: r6, r12, dx, dy, dz, Uij, dr, drmax, rand, rand3(3), du, dub, ratio, r
   double precision :: rO(3), rH1(3), rH2(3), rO_tr(3), rH1_tr(3), rH2_tr(3), rO_tr_rot(3), rH1_tr_rot(3), rH2_tr_rot(3)
   integer :: ntrial, naccpt, ibin
   integer, parameter :: nadjst=10**3
-  double precision, parameter :: boltzmanncst = 8.3144621e-3 ! (kJ/mol)/K  (joules per kelvin)
   double precision, parameter :: temperature = 300 ! K
+  double precision, parameter :: boltzmanncst = 8.3144621e-3 ! kJ/(mol K)
   double precision, parameter :: beta=1./(boltzmanncst*temperature)
   double precision, parameter :: halflen=len/2.
+  ! CODATA 2010 physical constants
   double precision, parameter :: pi=acos(-1.d0)
   double precision :: q0, q1, q2, q3 ! quaternion used to easily define the rotation matrix
-  double precision :: a11,a12,a13,a21,a22,a23,a31,a32,a33,x1,x2,x3
-  logical :: file_exists
-  character(len=1) :: string
+  double precision :: a11,a12,a13,a21,a22,a23,a31,a32,a33
+  double precision :: q(3*N), rx(3*N), ry(3*N), rz(3*N)
+  double precision :: Uewald, Ulj, Utot, UewaldBEFORE, UewaldAFTER, dUewald
 
 
   call print_header
@@ -58,7 +64,7 @@ program lasvegas
   ! Total potential energy of the system
   ! ====================================
   ! 1/ Lennard-Jones
-  u = 0
+  Ulj = 0
   do i=1,N-1
     do j=i+1,N
       dx = abs(rxO(i)-rxO(j))
@@ -69,16 +75,21 @@ program lasvegas
       if( dz>halflen ) dz=len-dz
       r6 = (dx**2 + dy**2 + dz**2)**3
       r12 = r6**2
-      Uij = 4*eps*( sig12/r12 - sig6/r6 )
-      U = U + Uij
+      Ulj = Ulj + 4*eps*( sig12/r12 - sig6/r6 )
     end do
   end do
+  Ulj = Ulj ! /kb ?
+print*,"Ulj initial=",Ulj
 
   ! 2/ Electrostatics
-  !call ewald
+  call fill_q
+  call fill_positions
+  call ewald_init (len)
+  call ewald_energy (N,len,q,rx,ry,rz,Uewald)
+print*,"Uewald initial =",Uewald
 
   open(43,file="internal-energy.dat")
-  write(43,*) u
+  write(43,*) Ulj+Uewald, Ulj, Uewald
 
   ! Monte Carlo Metropolis steps
   ! ============================
@@ -140,11 +151,60 @@ program lasvegas
       du = du -Uij
     end do
 
-    dub = du * beta
+    j=0
+    do l=1,N
+      j=j+1
+      rx(j)=rxO(l)
+      ry(j)=ryO(l)
+      rz(j)=rzO(l)
+      j=j+1
+      rx(j)=rxO(l)+rxH1(l)
+      ry(j)=ryO(l)+ryH1(l)
+      rz(j)=rzO(l)+rzH1(l)
+      j=j+1
+      rx(j)=rxO(l)+rxH2(l)
+      ry(j)=ryO(l)+ryH2(l)
+      rz(j)=rzO(l)+rzH2(l)
+    end do
+    call ewald_energy (N,len,q,rx,ry,rz,UewaldBEFORE)
+
+    j=0
+    do l=1,N
+      if (l/=i) then
+        j=j+1
+        rx(j)=rxO(l)
+        ry(j)=ryO(l)
+        rz(j)=rzO(l)
+        j=j+1
+        rx(j)=rxO(l)+rxH1(l)
+        ry(j)=ryO(l)+ryH1(l)
+        rz(j)=rzO(l)+rzH1(l)
+        j=j+1
+        rx(j)=rxO(l)+rxH2(l)
+        ry(j)=ryO(l)+ryH2(l)
+        rz(j)=rzO(l)+rzH2(l)
+      else if(l==i) then
+        j=j+1
+        rx(j)=rO_tr_rot(1)
+        ry(j)=rO_tr_rot(2)
+        rz(j)=rO_tr_rot(3)
+        j=j+1
+        rx(j)=rO_tr_rot(1)+rH1_tr_rot(1)
+        ry(j)=rO_tr_rot(2)+rH1_tr_rot(2)
+        rz(j)=rO_tr_rot(3)+rH1_tr_rot(3)
+        j=j+1
+        rx(j)=rO_tr_rot(1)+rH2_tr_rot(1)
+        ry(j)=rO_tr_rot(2)+rH2_tr_rot(2)
+        rz(j)=rO_tr_rot(3)+rH2_tr_rot(3)
+      end if
+    end do
+    call ewald_energy (N,len,q,rx,ry,rz,UewaldAFTER)
+
+    dub = (du+UewaldAFTER-UewaldBEFORE) * beta
     ! Metropolis algorithm
     if( dub <= 0 ) then ! always accept
       ! print*,"dub<=0  =>accpt"
-      u = u + du
+      Utot = Utot + du
       rxO(i) = rO_tr_rot(1)
       ryO(i) = rO_tr_rot(2)
       rzO(i) = rO_tr_rot(3)
@@ -158,7 +218,7 @@ program lasvegas
     else
       call random_number(rand)
       if( exp(-dub) > rand ) then
-        u = u + du
+        Utot = Utot + du
         rxO(i) = rO_tr_rot(1)
         ryO(i) = rO_tr_rot(2)
         rzO(i) = rO_tr_rot(3)
@@ -172,7 +232,7 @@ program lasvegas
       end if
     end if
 
-    if(modulo(ntrial,100)==0) write(43,*) u
+    if(modulo(ntrial,100)==0) write(43,*) Utot, Ulj, Uewald
 
     ntrial = ntrial + 1
     if( modulo(ntrial,nadjst)==0 ) then
@@ -223,25 +283,25 @@ program lasvegas
   end do ! mcstep
 
   close(43) ! internal energy
-
-  open(38,file="positions_final.dat")
-  write(38,*) 3*N ! N, which is an integer parameter that should not be read
-  write(38,*)"final configuration. Box length is",len
-  do i=1,N ! 3 sites per molecule
-    write(38,*)"O",rxO(i),ryO(i),rzO(i)
-    write(38,*)"H",[rxO(i),ryO(i),rzO(i)]+[rxH1(i),ryH1(i),rzH1(i)]
-    write(38,*)"H",[rxO(i),ryO(i),rzO(i)]+[rxH2(i),ryH2(i),rzH2(i)]
-  end do
-  close(38)
-  print*,"positions_final.dat written"
-
-
-
+  call print_final_positions
   call rdf_print
 
 
 
 contains
+  subroutine print_final_positions
+    implicit none
+    open(38,file="positions_final.dat")
+    write(38,*) 3*N ! N, which is an integer parameter that should not be read
+    write(38,*)"final configuration. Box length is",len
+    do i=1,N ! 3 sites per molecule
+      write(38,*)"O",rxO(i),ryO(i),rzO(i)
+      write(38,*)"H",[rxO(i),ryO(i),rzO(i)]+[rxH1(i),ryH1(i),rzH1(i)]
+      write(38,*)"H",[rxO(i),ryO(i),rzO(i)]+[rxH2(i),ryH2(i),rzH2(i)]
+    end do
+    close(38)
+    print*,"positions_final.dat written"
+  end subroutine print_final_positions
 
   ! Generate random quaternion
   ! Method by G. Marsaglia, Choosing a point from the surface of a sphere, Ann. Math. Stat. 43, 645–646 (1972).
@@ -275,6 +335,7 @@ contains
     double precision :: dl
     logical :: file_exists
     integer :: i,j,k,l
+    character(len=1) :: string
     inquire(file="positions_init.dat", EXIST=file_exists)
     if( file_exists ) then
       open(38,file="positions_init.dat")
@@ -375,4 +436,39 @@ contains
     end do
     close(78)
   end subroutine rdf_print
+
+  subroutine fill_q
+    implicit none
+    integer :: i, j
+    j=0
+    do i=1,N
+      j=j+1
+      q(j)=qO
+      j=j+1
+      q(j)=qH
+      j=j+1
+      q(j)=qH
+    end do
+  end subroutine fill_q
+
+  subroutine fill_positions
+    implicit none
+    integer :: i,j
+    j=0
+    do i=1,N
+      j=j+1
+      rx(j)=rxO(i)
+      ry(j)=ryO(i)
+      rz(j)=rzO(i)
+      j=j+1
+      rx(j)=rxO(i)+rxH1(i)
+      ry(j)=ryO(i)+ryH1(i)
+      rz(j)=rzO(i)+rzH1(i)
+      j=j+1
+      rx(j)=rxO(i)+rxH2(i)
+      ry(j)=ryO(i)+ryH2(i)
+      rz(j)=rzO(i)+rzH2(i)
+    end do
+  end subroutine fill_positions
+
 end program lasvegas

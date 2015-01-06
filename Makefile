@@ -36,7 +36,8 @@ OPTIM = -O3 -march=native -ffast-math -funroll-loops
 # ——————————————— Files to compile ———————————————
 
 FOBJ = $(OBJDIR)/main.o\
-			$(OBJDIR)/print_header.o
+			$(OBJDIR)/print_header.o\
+			$(OBJDIR)/module_ewald.o
 
 # ——————————————— Global rules ———————————————
 
@@ -68,7 +69,11 @@ $(OBJDIR)/%.o : $(SRCDIR)/%.f90
 $(EXE): $(FOBJ)
 
 $(OBJDIR)/main.o:\
-	$(SRCDIR)/main.f90
+	$(SRCDIR)/main.f90\
+	$(OBJDIR)/module_ewald.o
 
 $(OBJDIR)/print_header.o:\
 	$(SRCDIR)/print_header.f90
+
+$(OBJDIR)/module_ewald.o:\
+	$(SRCDIR)/module_ewald.f90
